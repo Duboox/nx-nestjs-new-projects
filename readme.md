@@ -1,20 +1,18 @@
-¡Por supuesto! Aquí tienes el **Manual Definitivo** (README) para configurar un monorepo Nx con NestJS + Docker que funcione rápido, estable y con soporte para Librerías Compartidas, **evitando el infierno de Webpack en macOS**.
+# 🚀 Nx + NestJS + Docker (Esbuild Edition)
 
-Este resumen condensa todas nuestras horas de debugging en la solución ganadora.
+### "The Holy Grail Setup"
 
----
+Guía para configurar un monorepo Nx robusto. Esta configuración soluciona los 3 grandes problemas del desarrollo moderno en NestJS:
 
-# 🚀 Nx + NestJS + Docker (Mac Optimized)
-
-### "The Native TSC Approach"
-
-Guía para levantar un entorno de desarrollo robusto que soporte Hot Reload en Docker (especialmente en macOS con Apple Silicon) y librerías compartidas, utilizando el compilador nativo de TypeScript (`tsc`) en lugar de Webpack.
+1. **Velocidad:** Compilación en milisegundos usando **Esbuild**.
+2. **Docker en Mac:** Hot Reload instantáneo sin bucles de CPU.
+3. **Librerías Compartidas:** Sin errores de rutas ni `module-alias`.
 
 ---
 
 ## 1. Crear el Workspace
 
-Inicializa el monorepo vacío.
+Inicializa el monorepo.
 
 ```bash
 npx create-nx-workspace@latest my-org --preset=apps --packageManager=yarn --nxCloud=skip
@@ -22,42 +20,31 @@ cd my-org
 
 ```
 
-## 2. Generar la API (NestJS)
+## 2. Instalar el Stack de Esbuild ⚡️
 
-Instala las dependencias necesarias y genera la aplicación.
+A diferencia de Webpack (lento) o TSC (rutas complejas), Esbuild es el punto medio perfecto.
 
 ```bash
-# Instalamos el plugin de Nest y JS
-yarn add -D @nx/nest @nx/js
+# 1. Instalar el plugin de Nest (si no lo tienes)
+yarn add -D @nx/nest
 
-# Generamos la app (sin frontend por ahora)
-yarn nx g @nx/nest:app apps/api --linter=eslint --unitTestRunner=jest
+# 2. Instalar Esbuild y su plugin de Nx
+yarn add -D @nx/esbuild esbuild
 
 ```
 
 ---
 
-## 3. El "Cambio Nativo" (CRÍTICO) ⚠️
+## 3. Configurar la App (`apps/api`)
 
-Por defecto, Nx usa Webpack. Debemos cambiarlo a **TSC** para evitar bucles infinitos en Docker y configurar la raíz para que acepte librerías.
+### A. Editar `apps/api/project.json`
 
-### A. Eliminar Webpack
-
-Borra el archivo de configuración que no usaremos.
-
-```bash
-rm apps/api/webpack.config.js
-
-```
-
-### B. Editar `apps/api/project.json`
-
-Cambia el **executor** a `@nx/js:tsc` y agrega la propiedad mágica `rootDir: "."`.
+Cambia el **executor** del `build` para usar esbuild. Esto empaqueta tu código local (apps + libs) en un solo archivo, pero deja los `node_modules` afuera para que Docker sea feliz.
 
 ```json
 "targets": {
   "build": {
-    "executor": "@nx/js:tsc", 
+    "executor": "@nx/esbuild:esbuild",
     "outputs": ["{options.outputPath}"],
     "options": {
       "outputPath": "dist/apps/api",
@@ -66,102 +53,113 @@ Cambia el **executor** a `@nx/js:tsc` y agrega la propiedad mágica `rootDir: ".
       "assets": ["apps/api/src/assets"],
       "generatePackageJson": true,
       
-      // --- LA SOLUCIÓN MÁGICA ---
-      // Fuerza a Nx a usar la raíz del workspace como contexto.
-      // Esto permite importar libs sin errores de "rootDir".
-      "rootDir": "."
+      // --- CONFIGURACIÓN ESBUILD ---
+      "platform": "node",
+      "bundle": true,       // Une tu código y tus libs (@app/common)
+      "thirdParty": false   // NO empaqueta node_modules (usa los de Docker)
     }
   },
   "serve": {
     "executor": "@nx/js:node",
     "options": {
       "buildTarget": "api:build",
-      // Evita conflictos de debugger en Docker
-      "inspect": false 
+      "watch": true
     }
   }
 }
 
 ```
 
-### C. Editar `apps/api/tsconfig.app.json`
+### B. Limpieza de `tsconfig`
 
-Asegúrate de desactivar `composite` e incluir las librerías.
+Con Esbuild no necesitas hacks. Asegúrate de que tu `apps/api/tsconfig.app.json` esté limpio (sin `rootDir` forzados).
 
 ```json
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "outDir": "../../dist/out-tsc",
-    "types": ["node"],
-    // Desactivamos reglas estrictas que chocan con monorepos simples
-    "composite": false,
-    "declaration": false
+    "types": ["node"]
   },
-  "include": [
-    "src/**/*.ts",
-    // Incluimos explícitamente las librerías compartidas
-    "../../libs/**/*.ts"
-  ],
-  "exclude": [
-    "jest.config.ts",
-    "src/**/*.spec.ts",
-    "src/**/*.test.ts"
-  ]
+  "include": ["src/**/*.ts"],
+  "exclude": ["jest.config.ts", "src/**/*.spec.ts", "src/**/*.test.ts"]
 }
 
 ```
 
 ---
 
-## 4. Crear y Usar Librerías (Libs)
+## 4. Ajustes de Código (Los "Gotchas") ⚠️
 
-Genera una librería compartida (DTOs, Interfaces, Utils).
+Como Esbuild es muy rápido, elimina cierta metadata que NestJS usa. Hay dos reglas de oro:
 
-```bash
-yarn nx g @nx/js:lib libs/common --importPath=@my-org/common
+### Regla 1: Decoradores Explícitos (`@Prop`)
 
-```
+Esbuild borra los tipos de TypeScript en tiempo de ejecución. Para entidades (Mongoose/TypeORM), debes decir el tipo explícitamente.
 
-**Uso en la App:**
-Simplemente impórtala en tu código NestJS:
+**❌ Mal (Esbuild no sabrá qué es):**
 
 ```typescript
-import { MyDto } from '@my-org/common';
+@Prop()
+createdAt: Date;
 
 ```
 
-*Gracias al paso 3B (`rootDir: "."`), esto compilará sin errores.*
+**✅ Bien (Explícito):**
+
+```typescript
+@Prop({ type: Date })
+createdAt: Date;
+
+```
+
+### Regla 2: Archivos JSON
+
+Si importas un JSON, usa `require` para evitar errores de seguridad ESM en Node 22+.
+
+**❌ Mal:**
+
+```typescript
+import * as data from './data.json';
+
+```
+
+**✅ Bien:**
+
+```typescript
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const data = require('./data.json');
+
+```
 
 ---
 
 ## 5. Configuración Docker (Mac Friendly) 🐳
 
-### Dockerfile (Raíz del proyecto)
+Gracias a Esbuild, la estructura en `dist` ahora es plana y predecible: `dist/apps/api/main.js`.
+
+### Dockerfile
 
 ```dockerfile
-FROM node:20-alpine
+FROM node:22-alpine
 
 WORKDIR /app
 
-# Instalamos dependencias
+# Instalar dependencias
 COPY package.json yarn.lock ./
 RUN yarn install --frozen-lockfile
 
-# Copiamos todo el código (Nx filtrará lo necesario al compilar)
+# Copiar código fuente
 COPY . .
 
-# Exponemos puerto
-EXPOSE 3000
-
-# Comando por defecto
-CMD ["yarn", "nx", "serve", "api", "--host", "0.0.0.0"]
+# Comando por defecto (será sobreescrito por docker-compose en dev)
+CMD ["node", "dist/apps/api/main.js"]
 
 ```
 
-### Docker Compose (Raíz del proyecto)
+### Docker Compose (La Estrategia "Manual Watch")
 
-La clave aquí es `CHOKIDAR_USEPOLLING`.
+Para garantizar el **Hot Reload** más rápido posible en Mac, usamos una estrategia híbrida: Nx compila en segundo plano, y Node nativo ejecuta el archivo.
 
 ```yaml
 version: '3.8'
@@ -169,20 +167,24 @@ version: '3.8'
 services:
   api:
     build: .
-    container_name: nx-nest-api
-    ports:
-      - "3000:3000"
-      - "9229:9229" # Debugger
     environment:
       - NODE_ENV=development
-      # --- CRÍTICO PARA MAC ---
-      # Fuerza a NestJS a "mirar" el disco activamente en lugar de 
-      # esperar eventos del sistema (que fallan en volúmenes montados).
+      # Polling para sistema de archivos de Mac
       - CHOKIDAR_USEPOLLING=true
       - CHOKIDAR_INTERVAL=1000
     volumes:
       - .:/app
       - /app/node_modules
+    ports:
+      - "3000:3000"
+    # EL COMANDO MAESTRO:
+    # 1. Nx construye en modo watch (& background)
+    # 2. Esperamos 5s a que compile
+    # 3. Node levanta el archivo final en modo watch
+    command: >
+      sh -c "yarn nx build api --watch & 
+      sleep 5 && 
+      node --enable-source-maps --watch dist/apps/api/main.js"
 
 ```
 
@@ -190,14 +192,14 @@ services:
 
 ## 6. Ejecución 🚀
 
-1. **Limpiar todo (opcional pero recomendado la primera vez):**
+1. **Limpieza inicial:**
 ```bash
 npx nx reset && rm -rf dist
 
 ```
 
 
-2. **Levantar:**
+2. **Arrancar:**
 ```bash
 docker-compose up --build
 
@@ -205,9 +207,8 @@ docker-compose up --build
 
 
 
-### Resultado Esperado
+### ¿Qué ganamos con esto?
 
-* La compilación usará `tsc` (rápido e incremental).
-* Al guardar un cambio en `apps/api` o `libs/common`, el reload será casi instantáneo.
-* No habrá bucles infinitos de reinicio.
-* La estructura en `dist` será un espejo del repo (Nx lo maneja automáticamente).
+* **Estructura Limpia:** El archivo final siempre está en `dist/apps/api/main.js`.
+* **Velocidad:** Esbuild es 10x-50x más rápido que TSC/Webpack.
+* **Simplicidad:** Sin `module-alias`, sin `rootDir` hacks, sin archivos duplicados.
