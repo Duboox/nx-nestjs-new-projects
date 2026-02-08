@@ -55,6 +55,9 @@ Cambia el **executor** del `build` para usar esbuild. Esto empaqueta tu código 
       
       // --- CONFIGURACIÓN ESBUILD ---
       "platform": "node",
+      "format": [
+          "cjs"
+        ],
       "bundle": true,       // Une tu código y tus libs (@app/common)
       "thirdParty": false   // NO empaqueta node_modules (usa los de Docker)
     }
